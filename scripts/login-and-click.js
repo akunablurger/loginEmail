@@ -79,30 +79,20 @@ function sleep(ms) {
 }
 
 function ignoredRequest(url) {
-  // keep list of common tracking and irrelevant endpoints; avoid malformed regex
   return /(google-analytics|analytics\.google|doubleclick|googletagmanager|csp\.withgoogle\.com|play\.google\.com\/log|\/ccm\/collect|directaccessweb-pa\.googleapis\.com\/webrtc|www\.google\.com\/i|www\.google\.com\/pagead|googletagmanager\.com)/i.test(url || '');
 }
 
-async function safeScreenshot(page, filePath) {
-  try {
-    await page.screenshot({
-      path: filePath,
-      fullPage: true
-    });
-  } catch (error) {
-    console.warn(`Screenshot gagal: ${error.message}`);
-  }
-}
-
-async function saveDebug(page, emailIndex, urlIndex, label) {
+async function saveDebug(page, emailIndex, urlIndex, label, runDir) {
   const prefix =
     `debug-email-${emailIndex}-url-${urlIndex}-${label}-${timestamp()}`;
 
-  await safeScreenshot(page, `${prefix}.png`);
+  const safePath = runDir ? path.join(runDir, prefix) : prefix;
+
+  await safeScreenshot(page, `${safePath}.png`);
 
   try {
     await fs.promises.writeFile(
-      `${prefix}.html`,
+      `${safePath}.html`,
       await page.content().catch(() => '')
     );
   } catch (error) {
@@ -113,13 +103,24 @@ async function saveDebug(page, emailIndex, urlIndex, label) {
 
   try {
     await fs.promises.writeFile(
-      `${prefix}.url.txt`,
+      `${safePath}.url.txt`,
       page.url()
     );
   } catch (error) {
     console.warn(
       `[email:${emailIndex}][url:${urlIndex}] Gagal menyimpan URL debug: ${error.message}`
     );
+  }
+}
+
+async function safeScreenshot(page, filePath) {
+  try {
+    await page.screenshot({
+      path: filePath,
+      fullPage: true
+    });
+  } catch (error) {
+    console.warn(`Screenshot gagal: ${error.message}`);
   }
 }
 
@@ -216,7 +217,7 @@ async function realGoogleChallenge(page) {
     .test(text);
 }
 
-async function waitForGoogleLogin(page, emailIndex, urlIndex) {
+async function waitForGoogleLogin(page, emailIndex, urlIndex, runDir) {
   const deadline = Date.now() + 120000;
   let lastLogAt = 0;
 
@@ -243,7 +244,7 @@ async function waitForGoogleLogin(page, emailIndex, urlIndex) {
     }
 
     if (await realGoogleChallenge(page)) {
-      await saveDebug(page, emailIndex, urlIndex, 'google-challenge');
+      await saveDebug(page, emailIndex, urlIndex, 'google-challenge', runDir);
       throw new Error('Google meminta verifikasi manual.');
     }
 
@@ -274,12 +275,12 @@ async function waitForGoogleLogin(page, emailIndex, urlIndex) {
         .test(finalText);
 
     if (finalReminder) {
-      await saveDebug(page, emailIndex, urlIndex, 'two-step-reminder');
+      await saveDebug(page, emailIndex, urlIndex, 'two-step-reminder', runDir);
       throw new Error('Dialog "Lakukan ini nanti" belum berhasil ditutup.');
     }
 
     if (await realGoogleChallenge(page)) {
-      await saveDebug(page, emailIndex, urlIndex, 'google-challenge-after-wait');
+      await saveDebug(page, emailIndex, urlIndex, 'google-challenge-after-wait', runDir);
       throw new Error('Google meminta verifikasi manual setelah login.');
     }
 
@@ -296,15 +297,103 @@ async function waitForGoogleLogin(page, emailIndex, urlIndex) {
     await page.waitForTimeout(2000);
   }
 
-  await saveDebug(page, emailIndex, urlIndex, 'login-timeout');
+  await saveDebug(page, emailIndex, urlIndex, 'login-timeout', runDir);
   throw new Error('Login Google belum selesai setelah 120 detik.');
+}
+
+async function waitForCoreApiReady(page, emailIndex, runDir, waitMs = 30000) {
+  const deadline = Date.now() + waitMs;
+  const stats = {
+    success: 0,
+    auth401: 0,
+    auth403: 0,
+    auth429: 0,
+    timestamp: new Date().toISOString()
+  };
+
+  const handler = (response) => {
+    const responseUrl = response.url();
+    if (!responseUrl.includes('alkalimakersuite-pa.clients6.google.com')) return;
+    if (!responseUrl.includes('MakerSuiteService')) return;
+
+    const status = response.status();
+    if (status === 401) stats.auth401 += 1;
+    if (status === 403) stats.auth403 += 1;
+    if (status === 429) stats.auth429 += 1;
+    if (status >= 200 && status < 300) stats.success += 1;
+  };
+
+  page.on('response', handler);
+
+  try {
+    while (Date.now() < deadline) {
+      if (stats.success > 0) {
+        break;
+      }
+      await page.waitForTimeout(1000);
+    }
+  } finally {
+    page.removeListener('response', handler);
+  }
+
+  const summary = {
+    ...stats,
+    waitMs,
+    ready: stats.success > 0,
+    finishedAt: new Date().toISOString()
+  };
+
+  await fs.promises.writeFile(
+    path.join(runDir, `coreapi-${emailIndex}-${timestamp()}.json`),
+    JSON.stringify(summary, null, 2)
+  );
+
+  console.log(
+    `[email:${emailIndex}] Core API bootstrap summary: ` +
+    `success=${summary.success}, 401=${summary.auth401}, 403=${summary.auth403}, 429=${summary.auth429}, ready=${summary.ready}`
+  );
+
+  return summary;
+}
+
+async function saveSessionArtifacts(context, page, emailIndex, runDir) {
+  try {
+    const cookies = await context.cookies();
+    await fs.promises.writeFile(
+      path.join(runDir, `cookies-email-${emailIndex}.json`),
+      JSON.stringify(cookies, null, 2)
+    );
+  } catch (err) {
+    console.warn(`[email:${emailIndex}] Gagal menyimpan cookies: ${err.message}`);
+  }
+
+  try {
+    const storage = await page.evaluate(() => {
+      const result = {};
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i);
+        if (key) {
+          result[key] = localStorage.getItem(key);
+        }
+      }
+      return result;
+    });
+
+    await fs.promises.writeFile(
+      path.join(runDir, `localstorage-email-${emailIndex}.json`),
+      JSON.stringify(storage, null, 2)
+    );
+  } catch (err) {
+    console.warn(`[email:${emailIndex}] Gagal menyimpan localStorage: ${err.message}`);
+  }
 }
 
 async function loginOnceAndSaveState({
   browser,
   account,
   emailIndex,
-  statePath
+  statePath,
+  runDir
 }) {
   const context = await browser.newContext({
     viewport: {
@@ -397,13 +486,10 @@ async function loginOnceAndSaveState({
     await waitForGoogleLogin(
       page,
       emailIndex,
-      0
+      0,
+      runDir
     );
 
-    /*
-     * Bootstrap AI Studio sebelum state disimpan.
-     * Tujuan: agar token AI Studio ikut terbentuk.
-     */
     const bootstrapUrl = 'https://aistudio.google.com/';
 
     await page.goto(
@@ -414,7 +500,7 @@ async function loginOnceAndSaveState({
       }
     );
 
-    await page.waitForTimeout(15000);
+    await page.waitForTimeout(20000);
 
     await clickText(
       page,
@@ -428,6 +514,9 @@ async function loginOnceAndSaveState({
     );
 
     await page.waitForTimeout(10000);
+
+    await waitForCoreApiReady(page, emailIndex, runDir, 30000);
+    await saveSessionArtifacts(context, page, emailIndex, runDir);
 
     await context.storageState({
       path: statePath
@@ -567,7 +656,7 @@ async function runIsolatedSession({
     const text = message.text();
 
     if (
-      /Self-XSS|No available adapters|Content Security Policy|rtc connection lost/i
+      /Self-XSS|No available adapters|Content Security Policy|rtc connection lost|JSEP Stream failed|Max reconnect attempts reached/i
         .test(text)
     ) {
       return;
@@ -652,7 +741,7 @@ async function runIsolatedSession({
     const valid = await isTargetValid(page);
 
     if (!valid) {
-      await saveDebug(page, emailIndex, urlIndex, 'invalid');
+      await saveDebug(page, emailIndex, urlIndex, 'invalid', runDir);
       console.warn(`${prefix} Halaman belum valid atau kembali ke login.`);
     }
 
@@ -675,7 +764,6 @@ async function runIsolatedSession({
     const openedPath = path.join(runDir, `opened-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`);
     await safeScreenshotWithLink(page, openedPath);
 
-    // schedule a screenshot at minute 3 so you can verify page stayed loaded
     const minute3Timer = setTimeout(async () => {
       try {
         const p = path.join(runDir, `minute-3-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`);
@@ -701,7 +789,6 @@ async function runIsolatedSession({
         )
       );
 
-      // optional lightweight progress log so you can see timing in logs
       const secsUntilReload = Math.max(0, Math.round((nextReloadAt - Date.now()) / 1000));
       const secsUntilEnd = Math.max(0, Math.round((endAt - Date.now()) / 1000));
       console.log(`${prefix} sampai reload: ${secsUntilReload}s, sampai akhir: ${secsUntilEnd}s, waitTime=${waitTime}ms`);
@@ -753,7 +840,7 @@ async function runIsolatedSession({
           await safeScreenshotWithLink(page, reloadPath);
         } catch (error) {
           console.warn(`${prefix} Reload gagal: ${error.message}`);
-          await saveDebug(page, emailIndex, urlIndex, 'reload-error');
+          await saveDebug(page, emailIndex, urlIndex, 'reload-error', runDir);
         }
 
         nextReloadAt = Date.now() + reloadIntervalMinutes * 60 * 1000;
@@ -766,7 +853,7 @@ async function runIsolatedSession({
   } catch (error) {
     console.error(`${prefix} Error: ${error.stack || error}`);
 
-    await saveDebug(page, emailIndex, urlIndex, 'error').catch(() => {});
+    await saveDebug(page, emailIndex, urlIndex, 'error', runDir).catch(() => {});
   } finally {
     await context.close().catch(() => {});
   }
@@ -843,17 +930,15 @@ function cleanupOldRuns(runsRoot, keepHours) {
     (_, index) => urls[index % urls.length]
   );
 
-  // cleanup old runs before creating a new one
   const runsRoot = 'runs';
   cleanupOldRuns(runsRoot, runRetentionHours);
 
-  // create a run folder per process run: runs/<timestamp>
   const runFolderName = timestamp();
   const runDir = path.join(runsRoot, runFolderName);
   fs.mkdirSync(runDir, { recursive: true });
   console.log(`Run folder dibuat: ${runDir}`);
+  console.log(`Run folder absolute: ${path.resolve(runDir)}`);
 
-  // accumulator for all screenshots across parallel sessions
   const allScreenshots = [];
 
   const tempDirectory = path.resolve('.runtime');
@@ -882,7 +967,8 @@ function cleanupOldRuns(runsRoot, keepHours) {
       browser,
       account,
       emailIndex,
-      statePath
+      statePath,
+      runDir
     });
 
     console.log(
@@ -909,7 +995,6 @@ function cleanupOldRuns(runsRoot, keepHours) {
       )
     );
 
-    // after all sessions finish, write links file in runDir
     try {
       const publicBase = process.env.PUBLIC_BASE_URL;
       const lines = allScreenshots.map((s) => {
@@ -921,6 +1006,7 @@ function cleanupOldRuns(runsRoot, keepHours) {
       const linksPath = path.join(runDir, `links-${runFolderName}.txt`);
       await fs.promises.writeFile(linksPath, lines.join('\n'));
       console.log(`Links file dibuat: ${linksPath}`);
+      console.log(`Isi links artifact: ${lines.join(' | ')}`);
     } catch (err) {
       console.warn(`Gagal menulis links file di run folder: ${err.message}`);
     }
