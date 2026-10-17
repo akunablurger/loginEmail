@@ -358,6 +358,7 @@ async function loginOnceAndSaveState({
       })
       .first();
 
+      
     if (
       await anotherAccount
         .isVisible({ timeout: 3000 })
@@ -620,6 +621,32 @@ async function runIsolatedSession({
     }
   });
 
+  // Collect screenshots produced during this session so we can export links later
+  const screenshots = [];
+
+  function makePublicLink(filePath) {
+    // If PUBLIC_BASE_URL is provided, map filename to that base URL (user provides where
+    // the working directory is served from). Otherwise return file:// absolute path.
+    const publicBase = process.env.PUBLIC_BASE_URL;
+    const filename = path.basename(filePath);
+
+    if (publicBase) {
+      return `${publicBase.replace(/\/$/, '')}/${encodeURIComponent(filename)}`;
+    }
+
+    return `file://${path.resolve(filePath)}`;
+  }
+
+  async function safeScreenshotWithLink(page, filePath) {
+    await safeScreenshot(page, filePath);
+    try {
+      const link = makePublicLink(filePath);
+      screenshots.push({ filePath, link });
+    } catch (err) {
+      console.warn(`${prefix} Gagal membuat link untuk ${filePath}: ${err.message}`);
+    }
+  }
+
   try {
     await openTarget(page, targetUrl, prefix);
 
@@ -649,10 +676,21 @@ async function runIsolatedSession({
       );
     }
 
-    await safeScreenshot(
+    await safeScreenshotWithLink(
       page,
       `opened-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`
     );
+
+    // schedule a screenshot at minute 3 so you can verify page stayed loaded
+    const minute3Timer = setTimeout(async () => {
+      try {
+        const p = `minute-3-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`;
+        await safeScreenshotWithLink(page, p);
+        console.log(`${prefix} Screenshot minute-3 captured.`);
+      } catch (err) {
+        console.warn(`${prefix} Gagal capture minute-3: ${err.message}`);
+      }
+    }, 3 * 60 * 1000);
 
     const endAt = Date.now() + keepOpenMinutes * 60 * 1000;
     let nextReloadAt = Date.now() + reloadIntervalMinutes * 60 * 1000;
@@ -668,6 +706,11 @@ async function runIsolatedSession({
           Math.min(untilReload, untilEnd)
         )
       );
+
+      // optional lightweight progress log so you can see timing in logs
+      const secsUntilReload = Math.max(0, Math.round((nextReloadAt - Date.now()) / 1000));
+      const secsUntilEnd = Math.max(0, Math.round((endAt - Date.now()) / 1000));
+      console.log(`${prefix} sampai reload: ${secsUntilReload}s, sampai akhir: ${secsUntilEnd}s, waitTime=${waitTime}ms`);
 
       await sleep(waitTime);
 
@@ -712,20 +755,36 @@ async function runIsolatedSession({
 
           await page.waitForTimeout(5000);
 
-          await safeScreenshot(
-            page,
-            `reload-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`
-          );
+          const reloadPath = `reload-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`;
+          await safeScreenshotWithLink(page, reloadPath);
         } catch (error) {
           console.warn(`${prefix} Reload gagal: ${error.message}`);
           await saveDebug(page, emailIndex, urlIndex, 'reload-error');
         }
 
         nextReloadAt = Date.now() + reloadIntervalMinutes * 60 * 1000;
+        console.log(`${prefix} nextReloadAt di-set: ${new Date(nextReloadAt).toISOString()} (interval=${reloadIntervalMinutes}m)`);
       }
     }
 
     console.log(`${prefix} Session selesai.`);
+
+    // If NOTIFY_EMAIL is set, write a small report file listing public links to screenshots
+    const notifyEmail = process.env.NOTIFY_EMAIL;
+    if (notifyEmail) {
+      try {
+        const sanitized = notifyEmail.replace(/[^a-z0-9@.\-_]/gi, '_');
+        const reportPath = path.join('.runtime', `links-${sanitized}-${timestamp()}.txt`);
+
+        const lines = screenshots.map((s) => `${s.link}  ${s.filePath}`);
+        await fs.promises.writeFile(reportPath, lines.join('\n'));
+
+        console.log(`${prefix} Report file dibuat: ${reportPath}`);
+        for (const l of lines) console.log(`${prefix} LINK: ${l}`);
+      } catch (err) {
+        console.warn(`${prefix} Gagal membuat report links: ${err.message}`);
+      }
+    }
   } catch (error) {
     console.error(`${prefix} Error: ${error.stack || error}`);
 
