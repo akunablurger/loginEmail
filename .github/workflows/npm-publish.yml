@@ -30,7 +30,8 @@ jobs:
 
       EMAIL_INDEX: ${{ matrix.email_index }}
       KEEP_OPEN_MINUTES: '350'
-      RELOAD_INTERVAL_MINUTES: '30'
+      RELOAD_INTERVAL_MINUTES: '15'
+      RUN_RETENTION_HOURS: '12'
 
     steps:
       - name: Checkout repository
@@ -48,6 +49,17 @@ jobs:
 
       - name: Run matrix email with five tabs
         run: node scripts/login-and-click.js
+
+      - name: Upload runs folder as artifact
+        id: upload_run_artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runs-email-${{ matrix.email_index }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            runs/
 
       - name: Upload screenshots and debug files
         id: upload_artifacts
@@ -69,6 +81,7 @@ jobs:
         shell: bash
         env:
           ARTIFACT_URL: ${{ steps.upload_artifacts.outputs.artifact-url }}
+          RUN_ARTIFACT_URL: ${{ steps.upload_run_artifacts.outputs.artifact-url }}
           EMAIL_INDEX: ${{ matrix.email_index }}
         run: |
           {
@@ -78,6 +91,11 @@ jobs:
               echo "[Buka screenshot dan debug artifact](${ARTIFACT_URL})"
             else
               echo "Artifact screenshot tidak tersedia."
+            fi
+            if [ -n "$RUN_ARTIFACT_URL" ]; then
+              echo "[Buka run folder artifact](${RUN_ARTIFACT_URL})"
+            else
+              echo "Artifact run folder tidak tersedia."
             fi
             echo
             echo "Matrix job ${EMAIL_INDEX}/5 menggunakan 1 email dan 5 tab AI Studio. Total workflow: 5 job x 5 tab = 25 tab."
