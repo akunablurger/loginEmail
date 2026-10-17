@@ -6,125 +6,92 @@ Automation Playwright untuk:
 - Membuka beberapa URL AI Studio.
 - Menekan tombol `Continue to the app`.
 - Menekan tombol `Skip` jika tersedia.
-- Menjaga halaman tetap terbuka selama hampir 6 jam.
-- Reload halaman setiap 30 menit.
-- Membuka ulang halaman apabila reload gagal.
+- Menjaga halaman tetap terbuka selama jangka waktu yang dikonfigurasi.
+- Reload halaman secara berkala (default 15 menit).
 - Menjalankan beberapa URL secara paralel.
 
 ## Cara kerja
 
-Workflow dijalankan setiap 6 jam menggunakan cron UTC:
+Workflow biasanya dijalankan berulang (mis. cron) dan menjalankan beberapa job secara paralel: setiap job menggunakan 1 akun dan membuka beberapa page/tab dalam satu browser context akun.
+
+Contoh konfigurasi lama yang dipakai di CI di-define melalui environment variables.
+
+## Run outputs (perubahan penting)
+
+- Setiap kali skrip dijalankan, skrip membuat folder baru di `runs/<timestamp>/` (contoh: `runs/2026-10-17T08-30-00-000`).
+- Semua screenshot yang dihasilkan (mis. `opened-...png`, `minute-3-...png`, `reload-...png`) disimpan ke folder run tersebut.
+- Setelah sesi selesai, skrip menulis file `links-<timestamp>.txt` di dalam folder run. Setiap baris berisi:
+  - `<link>  <filename>`
+  - Jika `PUBLIC_BASE_URL` diset, link berupa `PUBLIC_BASE_URL/<encoded-filename>`.
+  - Jika `PUBLIC_BASE_URL` tidak diset, link berupa `file://<absolute-path>`.
+
+Catatan: skrip hanya menulis file; jika Anda ingin link HTTP yang dapat diakses dari mesin lain, jalankan server static atau atur `PUBLIC_BASE_URL` yang menunjuk ke lokasi di mana folder `runs/` dilayani (mis. upload atau static server).
+
+## Secret / Environment variables yang diperlukan
+
+- AI_STUDIO_URL
+  - Daftar URL target (bisa dipisah koma atau baris baru). Contoh:
+    ```text
+    https://url1,https://url2,https://url3
+    ```
+
+- GMAIL_ACCOUNT_LIST
+  - Satu atau lebih akun dalam format `email:password`, satu per baris. Contoh (gunakan placeholder, jangan commit kredensial):
+    ```text
+    your-email@example.com:yourpassword
+    another@example.com:anotherpassword
+    ```
+  - Jika memungkinkan gunakan Playwright storage state (`GMAIL_STORAGE_STATE`) untuk menghindari login lewat username/password.
+
+- OPTIONAL: PUBLIC_BASE_URL
+  - Base URL publik yang akan dipakai untuk membentuk link ke file screenshot di run folder. Jika tidak diset, links akan menggunakan `file://` path lokal.
+
+- OPTIONAL: RELOAD_INTERVAL_MINUTES
+  - Interval reload halaman dalam menit. Default: `15`.
+
+- OPTIONAL: KEEP_OPEN_MINUTES
+  - Total menit setiap browser context akan tetap terbuka. Default: `350`.
+
+- OPTIONAL: EMAIL_INDEX
+  - Pilih akun (1-based index) bila Anda menjalankan skrip untuk satu akun saja locally.
+
+## Pengaturan durasi (dokumentasi)
+
+Default yang direkomendasikan di workflow / env:
 
 ```text
-0 */6 * * *
-```
-
-Setiap workflow menjalankan matrix lima job secara paralel. Satu job memakai satu akun dan membuka lima page/tab dalam satu browser context akun. Jadi totalnya 5 job × 5 tab = 25 tab:
-
-- Matrix job 1 memakai Email 1 dan membuka URL 1 sampai URL 5.
-- Matrix job 2 memakai Email 2 dan membuka URL 1 sampai URL 5.
-- Matrix job 3 memakai Email 3 dan membuka URL 1 sampai URL 5.
-- Matrix job 4 memakai Email 4 dan membuka URL 1 sampai URL 5.
-- Matrix job 5 memakai Email 5 dan membuka URL 1 sampai URL 5.
-
-Browser tetap terbuka selama 350 menit. Setelah itu browser ditutup agar tidak melewati batas waktu runner GitHub Actions enam jam.
-
-## Secret yang diperlukan
-
-Buka:
-
-```text
-Settings → Secrets and variables → Actions
-```
-
-Tambahkan secret berikut.
-
-### AI_STUDIO_URL
-
-Bisa menggunakan koma:
-
-```text
-https://url1,https://url2,https://url3,https://url4,https://url5
-```
-
-Atau menggunakan baris baru:
-
-```text
-https://url1
-https://url2
-https://url3
-https://url4
-https://url5
-```
-
-### GMAIL_ACCOUNT_LIST
-
-Isi lima akun dalam format `email:password`, satu akun per baris. Pemisah koma juga didukung, tetapi format baris baru lebih aman:
-
-```text
-email1@gmail.com:password1
-email2@gmail.com:password2
-email3@gmail.com:password3
-email4@gmail.com:password4
-email5@gmail.com:password5
-```
-
-Atau:
-
-```text
-email1@gmail.com:password1
-email2@gmail.com:password2
-email3@gmail.com:password3
-email4@gmail.com:password4
-email5@gmail.com:password5
-```
-
-Pemetaan:
-
-```text
-Email 1 → URL 1, URL 2, URL 3, URL 4, URL 5
-Email 2 → URL 1, URL 2, URL 3, URL 4, URL 5
-Email 3 → URL 1, URL 2, URL 3, URL 4, URL 5
-Email 4 → URL 1, URL 2, URL 3, URL 4, URL 5
-Email 5 → URL 1, URL 2, URL 3, URL 4, URL 5
-```
-
-### GMAIL_PASSWORD
-
-Password Gmail. Digunakan jika tidak memakai `GMAIL_STORAGE_STATE`.
-
-### GMAIL_STORAGE_STATE
-
-Base64 dari file Playwright storage state. Ini lebih direkomendasikan daripada login menggunakan username dan password setiap workflow.
-
-### GMAIL_USERNAME
-
-Opsional. Digunakan jika hanya ada satu akun Gmail.
-
-## Pengaturan durasi
-
-Pengaturan terdapat pada workflow:
-
-```yaml
-KEEP_OPEN_MINUTES: '350'
-RELOAD_INTERVAL_MINUTES: '30'
+KEEP_OPEN_MINUTES=350
+RELOAD_INTERVAL_MINUTES=15
 ```
 
 Artinya:
-
-- Browser hidup selama 350 menit.
-- Halaman reload setiap 30 menit.
-
-## Catatan GitHub Actions
-
-GitHub-hosted runner bersifat sementara. Halaman hanya akan tetap terbuka selama job berjalan. Ketika job selesai, browser dan runner akan dihentikan.
-
-Cron GitHub Actions menggunakan UTC dan bisa mengalami keterlambatan beberapa menit.
+- Browser hidup selama `KEEP_OPEN_MINUTES` menit (default 350).
+- Halaman reload setiap `RELOAD_INTERVAL_MINUTES` menit (default 15).
 
 ## Menjalankan secara lokal
+
+1) Install dependencies dan Playwright:
 
 ```bash
 npm ci
 npx playwright install chromium
+```
+
+2) Contoh menjalankan lokal (gunakan placeholder akun, jangan commit password):
+
+```bash
+RELOAD_INTERVAL_MINUTES=3 KEEP_OPEN_MINUTES=6 EMAIL_INDEX=1 \
+GMAIL_ACCOUNT_LIST='your-email@example.com:yourpassword' \
+AI_STUDIO_URL='https://aistudio.google.com/apps/your-app' \
 node scripts/login-and-click.js
 ```
+
+3) Setelah run selesai, cek folder `runs/<timestamp>/` yang dibuat pada awal run. Buka file `links-<timestamp>.txt` di folder tersebut untuk daftar link ke semua screenshot yang dihasilkan selama run.
+
+Jika Anda ingin agar link bisa dibuka via HTTP dari mesin lain, jalankan static server pada root repo (atau upload `runs/<timestamp>/` ke storage publik) dan set `PUBLIC_BASE_URL` ke root tersebut.
+
+## Catatan penting
+
+- Jangan menyimpan kredensial (email/password) di repo. Gunakan secrets / environment variables di CI.
+- Skrip menulis file debug (HTML, URL) bila terjadi error agar analisis lebih mudah.
+- Jika butuh fitur upload otomatis (S3/GCS) atau commit hasil run ke repo, saya bisa bantu menambahkan — tetapi ini membutuhkan kredensial/hak akses tambahan.
