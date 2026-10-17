@@ -358,7 +358,6 @@ async function loginOnceAndSaveState({
       })
       .first();
 
-      
     if (
       await anotherAccount
         .isVisible({ timeout: 3000 })
@@ -534,7 +533,9 @@ async function runIsolatedSession({
   emailIndex,
   urlIndex,
   keepOpenMinutes,
-  reloadIntervalMinutes
+  reloadIntervalMinutes,
+  runDir,
+  allScreenshots
 }) {
   const prefix = `[email:${emailIndex}][url:${urlIndex}]`;
 
@@ -621,12 +622,7 @@ async function runIsolatedSession({
     }
   });
 
-  // Collect screenshots produced during this session so we can export links later
-  const screenshots = [];
-
   function makePublicLink(filePath) {
-    // If PUBLIC_BASE_URL is provided, map filename to that base URL (user provides where
-    // the working directory is served from). Otherwise return file:// absolute path.
     const publicBase = process.env.PUBLIC_BASE_URL;
     const filename = path.basename(filePath);
 
@@ -641,7 +637,7 @@ async function runIsolatedSession({
     await safeScreenshot(page, filePath);
     try {
       const link = makePublicLink(filePath);
-      screenshots.push({ filePath, link });
+      allScreenshots.push({ filePath, link });
     } catch (err) {
       console.warn(`${prefix} Gagal membuat link untuk ${filePath}: ${err.message}`);
     }
@@ -676,15 +672,13 @@ async function runIsolatedSession({
       );
     }
 
-    await safeScreenshotWithLink(
-      page,
-      `opened-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`
-    );
+    const openedPath = path.join(runDir, `opened-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`);
+    await safeScreenshotWithLink(page, openedPath);
 
     // schedule a screenshot at minute 3 so you can verify page stayed loaded
     const minute3Timer = setTimeout(async () => {
       try {
-        const p = `minute-3-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`;
+        const p = path.join(runDir, `minute-3-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`);
         await safeScreenshotWithLink(page, p);
         console.log(`${prefix} Screenshot minute-3 captured.`);
       } catch (err) {
@@ -755,7 +749,7 @@ async function runIsolatedSession({
 
           await page.waitForTimeout(5000);
 
-          const reloadPath = `reload-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`;
+          const reloadPath = path.join(runDir, `reload-email-${emailIndex}-url-${urlIndex}-${timestamp()}.png`);
           await safeScreenshotWithLink(page, reloadPath);
         } catch (error) {
           console.warn(`${prefix} Reload gagal: ${error.message}`);
@@ -768,23 +762,7 @@ async function runIsolatedSession({
     }
 
     console.log(`${prefix} Session selesai.`);
-
-    // If NOTIFY_EMAIL is set, write a small report file listing public links to screenshots
-    const notifyEmail = process.env.NOTIFY_EMAIL;
-    if (notifyEmail) {
-      try {
-        const sanitized = notifyEmail.replace(/[^a-z0-9@.\-_]/gi, '_');
-        const reportPath = path.join('.runtime', `links-${sanitized}-${timestamp()}.txt`);
-
-        const lines = screenshots.map((s) => `${s.link}  ${s.filePath}`);
-        await fs.promises.writeFile(reportPath, lines.join('\n'));
-
-        console.log(`${prefix} Report file dibuat: ${reportPath}`);
-        for (const l of lines) console.log(`${prefix} LINK: ${l}`);
-      } catch (err) {
-        console.warn(`${prefix} Gagal membuat report links: ${err.message}`);
-      }
-    }
+    clearTimeout(minute3Timer);
   } catch (error) {
     console.error(`${prefix} Error: ${error.stack || error}`);
 
@@ -836,6 +814,15 @@ async function runIsolatedSession({
     (_, index) => urls[index % urls.length]
   );
 
+  // create a run folder per process run: runs/<timestamp>
+  const runFolderName = timestamp();
+  const runDir = path.join('runs', runFolderName);
+  fs.mkdirSync(runDir, { recursive: true });
+  console.log(`Run folder dibuat: ${runDir}`);
+
+  // accumulator for all screenshots across parallel sessions
+  const allScreenshots = [];
+
   const tempDirectory = path.resolve('.runtime');
   fs.mkdirSync(tempDirectory, { recursive: true });
 
@@ -882,10 +869,28 @@ async function runIsolatedSession({
           emailIndex,
           urlIndex: index + 1,
           keepOpenMinutes,
-          reloadIntervalMinutes
+          reloadIntervalMinutes,
+          runDir,
+          allScreenshots
         })
       )
     );
+
+    // after all sessions finish, write links file in runDir
+    try {
+      const publicBase = process.env.PUBLIC_BASE_URL;
+      const lines = allScreenshots.map((s) => {
+        const name = path.basename(s.filePath);
+        const link = publicBase ? `${publicBase.replace(/\/$/, '')}/${encodeURIComponent(name)}` : `file://${path.resolve(s.filePath)}`;
+        return `${link}  ${name}`;
+      });
+
+      const linksPath = path.join(runDir, `links-${runFolderName}.txt`);
+      await fs.promises.writeFile(linksPath, lines.join('\n'));
+      console.log(`Links file dibuat: ${linksPath}`);
+    } catch (err) {
+      console.warn(`Gagal menulis links file di run folder: ${err.message}`);
+    }
   } finally {
     await browser.close().catch(() => {});
 
