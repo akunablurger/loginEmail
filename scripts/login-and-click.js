@@ -79,8 +79,8 @@ function sleep(ms) {
 }
 
 function ignoredRequest(url) {
-  return /google-analytics|analytics\.google|doubleclick|googletagmanager|csp\.withgoogle\.com|play\.google\.com\/log|\/ccm\/collect|directaccessweb-pa\.googleapis\.com\/webrtc|www\.google\.com\/i[...]
-    .test(url || '');
+  // keep list of common tracking and irrelevant endpoints; avoid malformed regex
+  return /(google-analytics|analytics\.google|doubleclick|googletagmanager|csp\.withgoogle\.com|play\.google\.com\/log|\/ccm\/collect|directaccessweb-pa\.googleapis\.com\/webrtc|www\.google\.com\/i|www\.google\.com\/pagead|googletagmanager\.com)/i.test(url || '');
 }
 
 async function safeScreenshot(page, filePath) {
