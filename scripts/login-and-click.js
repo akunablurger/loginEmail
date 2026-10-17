@@ -79,7 +79,7 @@ function sleep(ms) {
 }
 
 function ignoredRequest(url) {
-  return /google-analytics|analytics\.google|doubleclick|googletagmanager|csp\.withgoogle\.com|play\.google\.com\/log|\/ccm\/collect|directaccessweb-pa\.googleapis\.com\/webrtc|www\.google\.com\/images\/cleardot\.gif/i
+  return /google-analytics|analytics\.google|doubleclick|googletagmanager|csp\.withgoogle\.com|play\.google\.com\/log|\/ccm\/collect|directaccessweb-pa\.googleapis\.com\/webrtc|www\.google\.com\/i[...]
     .test(url || '');
 }
 
@@ -748,7 +748,7 @@ async function runIsolatedSession({
 
   const reloadIntervalMinutes = Math.max(
     1,
-    parseInt(process.env.RELOAD_INTERVAL_MINUTES || '30', 10)
+    parseInt(process.env.RELOAD_INTERVAL_MINUTES || '15', 10)
   );
 
   const accounts = parseAccounts(
