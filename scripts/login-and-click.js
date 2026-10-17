@@ -772,6 +772,33 @@ async function runIsolatedSession({
   }
 }
 
+function cleanupOldRuns(runsRoot, keepHours) {
+  try {
+    if (!fs.existsSync(runsRoot)) return;
+
+    const entries = fs.readdirSync(runsRoot, { withFileTypes: true });
+    const nowMs = Date.now();
+    const keepMs = keepHours * 60 * 60 * 1000;
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const fullPath = path.join(runsRoot, entry.name);
+      try {
+        const st = fs.statSync(fullPath);
+        const mtime = st.mtimeMs || st.ctimeMs || st.birthtimeMs || 0;
+        if (nowMs - mtime > keepMs) {
+          console.log(`Menghapus run folder lama: ${fullPath}`);
+          fs.rmSync(fullPath, { recursive: true, force: true });
+        }
+      } catch (err) {
+        console.warn(`Gagal mengecek/hapus ${fullPath}: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`cleanupOldRuns error: ${err.message}`);
+  }
+}
+
 (async () => {
   const emailIndex = Math.max(
     1,
@@ -787,6 +814,8 @@ async function runIsolatedSession({
     1,
     parseInt(process.env.RELOAD_INTERVAL_MINUTES || '15', 10)
   );
+
+  const runRetentionHours = Math.max(0, parseInt(process.env.RUN_RETENTION_HOURS || '12', 10));
 
   const accounts = parseAccounts(
     process.env.GMAIL_ACCOUNT_LIST
@@ -814,9 +843,13 @@ async function runIsolatedSession({
     (_, index) => urls[index % urls.length]
   );
 
+  // cleanup old runs before creating a new one
+  const runsRoot = 'runs';
+  cleanupOldRuns(runsRoot, runRetentionHours);
+
   // create a run folder per process run: runs/<timestamp>
   const runFolderName = timestamp();
-  const runDir = path.join('runs', runFolderName);
+  const runDir = path.join(runsRoot, runFolderName);
   fs.mkdirSync(runDir, { recursive: true });
   console.log(`Run folder dibuat: ${runDir}`);
 
